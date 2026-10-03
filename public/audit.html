@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PayGuard AI — Audit Trail</title>
+  <style>
+    body { font-family: Arial; max-width: 900px; margin: 20px auto; padding: 16px; background: #f5f7fb; color: #111827; }
+    h1 { margin: 0 0 6px; font-size: 26px; }
+    .sub { color: #667085; margin-top: 0; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .topbar a { font-size: 14px; color: #0070ba; text-decoration: none; margin-left: 12px; }
+    .entry { background: white; border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.05); border-left: 5px solid #6b7280; }
+    .entry.POLICY_CREATED { border-left-color: #6366f1; }
+    .entry.DECISION_ALLOW { border-left-color: #10b981; }
+    .entry.DECISION_BLOCK { border-left-color: #ef4444; }
+    .entry.PAYPAL_ORDER_CREATED { border-left-color: #0070ba; }
+    .entry.PAYMENT_CAPTURED { border-left-color: #059669; }
+    .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+    .type { font-weight: bold; font-size: 14px; letter-spacing: .5px; }
+    .ts { color: #667085; font-size: 12px; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: bold; margin-left: 8px; }
+    .badge.allow { background: #d1fae5; color: #065f46; }
+    .badge.block { background: #fee2e2; color: #991b1b; }
+    pre { background: #f0f2f5; padding: 10px; border-radius: 8px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+    ul { margin: 8px 0 0 0; padding-left: 20px; font-size: 13px; }
+    li { margin-bottom: 3px; }
+    .empty { background: white; border-radius: 14px; padding: 30px; text-align: center; color: #667085; }
+    .count { font-size: 13px; color: #667085; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <h1>PayGuard AI — Audit Trail</h1>
+  <p class="sub">Every policy, decision, order, and payment recorded by the firewall.</p>
+
+  <div class="topbar">
+    <div class="count" id="count">Loading…</div>
+    <div>
+      <a href="/">← Back to PayGuard</a>
+      <a href="#" onclick="pgReload(); return false;">Refresh</a>
+    </div>
+  </div>
+
+  <div id="entries"></div>
+
+  <script>
+    function pgFormatTime(iso) {
+      try {
+        var d = new Date(iso);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      } catch (e) { return iso; }
+    }
+
+    function pgRenderEntry(e) {
+      var type = e.type || "ENTRY";
+      var cls = type;
+      var badge = "";
+      if (type === "DECISION") {
+        cls = "DECISION_" + e.decision;
+        badge = "<span class='badge " + (e.decision === "ALLOW" ? "allow" : "block") + "'>" + e.decision + "</span>";
+      }
+      var html = "<div class='entry " + cls + "'>";
+      html += "<div class='head'><div class='type'>" + type.replace(/_/g, " ") + badge + "</div>";
+      html += "<div class='ts'>" + pgFormatTime(e.timestamp) + "</div></div>";
+
+      if (type === "POLICY_CREATED") {
+        html += "<div style='font-size:13px'>Intent: <i>" + (e.intent || "") + "</i></div>";
+        html += "<pre>" + JSON.stringify(e.policy, null, 2) + "</pre>";
+      } else if (type === "DECISION") {
+        var t = e.transaction || {};
+        html += "<div style='font-size:13px'>Item: <b>" + (t.item || "") + "</b> · Price: <b>$" + (t.price != null ? Number(t.price).toFixed(2) : "?") + "</b></div>";
+        if (Array.isArray(e.reasons)) {
+          html += "<ul>" + e.reasons.map(function (r) { return "<li>" + r + "</li>"; }).join("") + "</ul>";
+        }
+      } else if (type === "PAYPAL_ORDER_CREATED") {
+        html += "<div style='font-size:13px'>Order ID: <b>" + e.orderId + "</b></div>";
+        html += "<div style='font-size:13px'>Amount: <b>$" + Number(e.amount).toFixed(2) + " " + (e.currency || "USD") + "</b></div>";
+        if (e.description) html += "<div style='font-size:13px'>Description: " + e.description + "</div>";
+      } else if (type === "PAYMENT_CAPTURED") {
+        html += "<div style='font-size:13px'>Order ID: " + e.orderId + "</div>";
+        if (e.captureId) html += "<div style='font-size:13px'>Capture ID: <b>" + e.captureId + "</b></div>";
+        if (e.amount) html += "<div style='font-size:13px'>Amount: <b>$" + Number(e.amount).toFixed(2) + "</b></div>";
+        if (e.fee) html += "<div style='font-size:13px'>PayPal fee: $" + Number(e.fee).toFixed(2) + " · Net: $" + Number(e.net).toFixed(2) + "</div>";
+        html += "<div style='font-size:13px'>Status: <b>" + e.status + "</b></div>";
+      } else {
+        html += "<pre>" + JSON.stringify(e, null, 2) + "</pre>";
+      }
+
+      html += "</div>";
+      return html;
+    }
+
+    function pgReload() {
+      fetch("/api/audit")
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          var entries = data.entries || [];
+          document.getElementById("count").textContent = entries.length + " event" + (entries.length === 1 ? "" : "s") + " recorded";
+          var container = document.getElementById("entries");
+          if (entries.length === 0) {
+            container.innerHTML = "<div class='empty'>No events yet. Run a transaction on the <a href='/'>main page</a> first.</div>";
+            return;
+          }
+          // newest first
+          var sorted = entries.slice().reverse();
+          container.innerHTML = sorted.map(pgRenderEntry).join("");
+        })
+        .catch(function (e) {
+          document.getElementById("entries").innerHTML = "<div class='empty'>Error loading audit: " + e.message + "</div>";
+        });
+    }
+
+    pgReload();
+    setInterval(pgReload, 5000);
+  </script>
+</body>
+</html>

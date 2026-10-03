@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PayGuard AI</title>
+  <style>
+    body { font-family: Arial; max-width: 900px; margin: 20px auto; padding: 16px; background: #f5f7fb; color: #111827; }
+    .card { background: white; border-radius: 16px; padding: 20px; margin-bottom: 16px; box-shadow: 0 4px 20px rgba(0,0,0,.06); }
+    textarea, input, select { width: 100%; padding: 12px; border: 1px solid #d0d5dd; border-radius: 10px; font-size: 15px; box-sizing: border-box; margin-bottom: 10px; }
+    textarea { min-height: 90px; }
+    button { padding: 12px 20px; background: #111827; color: white; border: 0; border-radius: 10px; font-size: 15px; cursor: pointer; margin-right: 8px; margin-top: 4px; }
+    button.secondary { background: #6b7280; }
+    button.paypal { background: #0070ba; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    pre { background: #f0f2f5; padding: 14px; border-radius: 10px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+    .decision { padding: 14px; border-radius: 10px; font-weight: bold; font-size: 16px; margin-bottom: 10px; }
+    .allow { background: #d1fae5; color: #065f46; }
+    .block { background: #fee2e2; color: #991b1b; }
+    .hidden { display: none; }
+    h1 { margin: 0 0 6px; font-size: 26px; }
+    h2 { font-size: 18px; margin: 0 0 12px; }
+    label { font-size: 13px; color: #667085; display: block; margin-bottom: 4px; }
+    .err { background: #fee2e2; color: #991b1b; padding: 10px; border-radius: 8px; margin-top: 10px; font-size: 13px; }
+    .hint { font-size: 13px; color: #667085; margin-top: 8px; }
+    .audit-link { margin-top: 0; font-size: 14px; }
+    .audit-link a { color: #0070ba; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>PayGuard AI</h1>
+  <p style="color:#667085;margin-top:0">AI transaction firewall for agentic commerce.</p>
+  <p class="audit-link"><a href="/audit">View audit trail →</a></p>
+
+  <div class="card">
+    <h2>1. Define your purchase policy</h2>
+    <textarea id="intent">I need a programming laptop under $800 with at least 16GB RAM. No refurbished.</textarea>
+    <button onclick="pgAnalyze()">Analyze Intent</button>
+    <div id="policyOut"></div>
+  </div>
+
+  <div class="card" id="step2">
+    <h2>2. Propose a transaction</h2>
+    <label>Item</label>
+    <input id="item" value="Programming laptop 16GB RAM" />
+    <label>Price (USD)</label>
+    <input id="price" type="number" step="0.01" value="749" />
+    <label>Specs (comma-separated key:value pairs)</label>
+    <input id="specs" value="ram:16GB, condition:new" />
+    <button onclick="pgEvaluate()">Evaluate Against Policy</button>
+    <div id="decisionOut"></div>
+  </div>
+
+  <div class="card hidden" id="step3">
+    <h2>3. Execute payment</h2>
+    <button id="payBtn" class="paypal" onclick="pgCreatePayPalOrder()">Pay with PayPal</button>
+    <button class="secondary" onclick="pgCaptureOrder()">I approved — Capture</button>
+    <div id="paypalOut"></div>
+  </div>
+
+  <div id="globalError"></div>
+
+  <script>
+    window.addEventListener("error", function (e) {
+      var el = document.getElementById("globalError");
+      if (el) el.innerHTML = "<div class='err'><b>JS Error:</b> " + e.message + "</div>";
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+      var el = document.getElementById("globalError");
+      if (el) el.innerHTML = "<div class='err'><b>Promise Error:</b> " + (e.reason && e.reason.message ? e.reason.message : e.reason) + "</div>";
+    });
+
+    var STORE_KEY = "payguard_state_v1";
+    var pgCurrentPolicy = null;
+    var pgLastOrderId = null;
+    var pgLastDecision = null;
+
+    function pgSaveState() {
+      try {
+        var state = {
+          policy: pgCurrentPolicy,
+          lastOrderId: pgLastOrderId,
+          decision: pgLastDecision,
+          item: document.getElementById("item").value,
+          price: document.getElementById("price").value,
+          specs: document.getElementById("specs").value
+        };
+        localStorage.setItem(STORE_KEY, JSON.stringify(state));
+      } catch (e) {}
+    }
+
+    function pgLoadState() {
+      try {
+        var raw = localStorage.getItem(STORE_KEY);
+        if (!raw) return;
+        var state = JSON.parse(raw);
+        if (state.item) document.getElementById("item").value = state.item;
+        if (state.price) document.getElementById("price").value = state.price;
+        if (state.specs) document.getElementById("specs").value = state.specs;
+        if (state.policy) {
+          pgCurrentPolicy = state.policy;
+          document.getElementById("policyOut").innerHTML = "<pre>" + JSON.stringify(state.policy, null, 2) + "</pre>";
+        }
+        if (state.decision) {
+          pgLastDecision = state.decision;
+          pgRenderDecision(state.decision);
+        }
+        if (state.lastOrderId) {
+          pgLastOrderId = state.lastOrderId;
+          document.getElementById("paypalOut").innerHTML =
+            "<div class='decision allow' style='font-size:14px'>Saved order awaiting capture</div>" +
+            "<pre>Order ID: " + state.lastOrderId + "\n\nTap 'I approved — Capture' to finish.</pre>";
+        }
+      } catch (e) {}
+    }
+
+    function pgClearState() {
+      try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+    }
+
+    function pgAnalyze() {
+      var intent = document.getElementById("intent").value;
+      var out = document.getElementById("policyOut");
+      out.innerHTML = "<pre>Analyzing...</pre>";
+      fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent: intent })
+      })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data.success) { out.innerHTML = "<pre>Error: " + data.error + "</pre>"; return; }
+        pgCurrentPolicy = data.policy;
+        pgLastDecision = null;
+        pgLastOrderId = null;
+        out.innerHTML = "<pre>" + JSON.stringify(data.policy, null, 2) + "</pre>";
+        document.getElementById("step3").classList.add("hidden");
+        document.getElementById("decisionOut").innerHTML = "";
+        document.getElementById("paypalOut").innerHTML = "";
+        pgSaveState();
+      })
+      .catch(function (e) { out.innerHTML = "<pre>Error: " + e.message + "</pre>"; });
+    }
+
+    function pgEvaluate() {
+      var out = document.getElementById("decisionOut");
+      if (!pgCurrentPolicy) {
+        out.innerHTML = "<div class='err'>Analyze intent first.</div>";
+        return;
+      }
+      var specsRaw = document.getElementById("specs").value;
+      var specs = {};
+      specsRaw.split(",").forEach(function (pair) {
+        var parts = pair.split(":");
+        if (parts.length >= 2) {
+          var k = parts[0].trim();
+          var v = parts.slice(1).join(":").trim();
+          if (k && v) specs[k] = v;
+        }
+      });
+      var transaction = {
+        item: document.getElementById("item").value,
+        price: parseFloat(document.getElementById("price").value),
+        specs: specs
+      };
+      out.innerHTML = "<pre>Evaluating...</pre>";
+      fetch("/api/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ policy: pgCurrentPolicy, transaction: transaction })
+      })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data.success) { out.innerHTML = "<pre>Error: " + data.error + "</pre>"; return; }
+        pgLastDecision = data.result;
+        pgRenderDecision(data.result);
+        pgSaveState();
+      })
+      .catch(function (e) { out.innerHTML = "<pre>Error: " + e.message + "</pre>"; });
+    }
+
+    function pgRenderDecision(r) {
+      var out = document.getElementById("decisionOut");
+      var cls = r.decision === "ALLOW" ? "allow" : "block";
+      var lines = r.reasons.map(function (x) { return "• " + x; }).join("\n");
+      out.innerHTML = "<div class='decision " + cls + "'>" + r.decision + "</div><pre>" + lines + "</pre>";
+      if (r.decision === "ALLOW") {
+        document.getElementById("step3").classList.remove("hidden");
+      } else {
+        document.getElementById("step3").classList.add("hidden");
+      }
+    }
+
+    function pgCreatePayPalOrder() {
+      var price = parseFloat(document.getElementById("price").value);
+      var item = document.getElementById("item").value;
+      var out = document.getElementById("paypalOut");
+      out.innerHTML = "<pre>Creating PayPal order...</pre>";
+      pgFetchWithRetry("/api/paypal/create-order", {
+        amount: price, currency: "USD", description: item
+      })
+      .then(function (data) {
+        if (!data.success) { out.innerHTML = "<pre>Error: " + data.error + "</pre>"; return; }
+        pgLastOrderId = data.order.id;
+        pgSaveState();
+        out.innerHTML =
+          "<pre>Order ID: " + data.order.id + "\nStatus: " + data.order.status + "</pre>" +
+          "<a href='" + data.order.approveUrl + "' target='_blank'><button class='paypal'>Open PayPal approval page</button></a>" +
+          "<p class='hint'>After approving on PayPal, return to this tab and tap <b>I approved — Capture</b>.</p>";
+      })
+      .catch(function (e) { out.innerHTML = "<pre>Error: " + e.message + "</pre>"; });
+    }
+
+    function pgCaptureOrder() {
+      var out = document.getElementById("paypalOut");
+      if (!pgLastOrderId) {
+        out.innerHTML = "<div class='err'>No order to capture. Tap 'Pay with PayPal' first.</div>";
+        return;
+      }
+      out.innerHTML = "<pre>Capturing order " + pgLastOrderId + "...\n\nIf the network is slow, PayGuard will retry automatically.</pre>";
+      pgFetchWithRetry("/api/paypal/capture-order", { orderId: pgLastOrderId }, 2)
+      .then(function (data) {
+        if (!data.success) {
+          out.innerHTML = "<pre>Error: " + data.error + "\n\nIf this is a network timeout, tap 'I approved — Capture' again.</pre>";
+          return;
+        }
+        var captureId = "unknown";
+        try { captureId = data.capture.purchase_units[0].payments.captures[0].id; } catch (e) {}
+        out.innerHTML =
+          "<div class='decision allow'>PAYMENT CAPTURED</div>" +
+          "<pre>Capture ID: " + captureId + "\nStatus: " + data.capture.status + "</pre>" +
+          "<button class='secondary' onclick='pgNewTransaction()'>New transaction</button>";
+        pgLastOrderId = null;
+        pgSaveState();
+      })
+      .catch(function (e) { out.innerHTML = "<pre>Error: " + e.message + "\n\nTap 'I approved — Capture' again if the network was slow.</pre>"; });
+    }
+
+    // POST with automatic retry on network failures (timeouts, DNS hiccups)
+    function pgFetchWithRetry(path, body, maxRetries) {
+      maxRetries = maxRetries || 1;
+      function attempt(n) {
+        return fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          // If the server returned success:false due to a fetch timeout,
+          // retry once. Otherwise return whatever the server said.
+          if (!data.success && n < maxRetries && /fetch failed|timeout|ECONNRESET|UND_ERR/i.test(data.error || "")) {
+            return new Promise(function (resolve) { setTimeout(resolve, 2000); }).then(function () { return attempt(n + 1); });
+          }
+          return data;
+        })
+        .catch(function (err) {
+          if (n < maxRetries) {
+            return new Promise(function (resolve) { setTimeout(resolve, 2000); }).then(function () { return attempt(n + 1); });
+          }
+          throw err;
+        });
+      }
+      return attempt(0);
+    }
+
+    function pgNewTransaction() {
+      pgClearState();
+      pgCurrentPolicy = null;
+      pgLastOrderId = null;
+      pgLastDecision = null;
+      document.getElementById("policyOut").innerHTML = "";
+      document.getElementById("decisionOut").innerHTML = "";
+      document.getElementById("paypalOut").innerHTML = "";
+      document.getElementById("step3").classList.add("hidden");
+      document.getElementById("item").value = "Programming laptop 16GB RAM";
+      document.getElementById("price").value = "749";
+      document.getElementById("specs").value = "ram:16GB, condition:new";
+    }
+
+    document.addEventListener("DOMContentLoaded", pgLoadState);
+  </script>
+</body>
+</html>
