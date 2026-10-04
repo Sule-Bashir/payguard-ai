@@ -54,7 +54,8 @@ Audit trail (every policy, decision, order, capture)
 - **Mobile-first** — the entire project was built and is demoed from an Android phone using Termux.
 
 ## Demo flow
-
+Live Demo URL: https://payguard-ai-qloi.onrender.com
+Simple steps below 👇 
 1. Enter: *"I need a programming laptop under $800 with at least 16GB RAM. No refurbished."*
 2. PayGuard generates a policy: `max_budget: 800`, requirement `16GB RAM`, restriction `forbid: refurbished`.
 3. Propose a laptop at `$749`, 16GB, new → **ALLOW**
