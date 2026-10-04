@@ -46,8 +46,8 @@ async function createOrder({ amount, currency, description }) {
       application_context: {
         brand_name: "PayGuard AI",
         user_action: "PAY_NOW",
-        return_url: "http://localhost:3000/paypal-return",
-        cancel_url: "http://localhost:3000/paypal-cancel"
+        return_url: "https://payguard-ai-qloi.onrender.com/paypal-return",
+        cancel_url: "https://payguard-ai-qloi.onrender.com/paypal-cancel"
       }
     })
   });
